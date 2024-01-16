@@ -46,7 +46,7 @@ jobs:
         if: env.YEAR == ''
       - name: weread heatmap
         run: |
-          github_heatmap weread  --weread_cookie "${{secrets.WEREAD_COOKIE}}" --year $YEAR  --me "${{secrets.NAME}}" --with-animation --background-color=${{ vars.background_color||'#FFFFFF'}} --track-color=${{ vars.track_color||'#ACE7AE'}} --special-color1=${{ vars.special_color||'#69C16E'}} --special-color2=${{ vars.special_color2||'#549F57'}} --dom-color=${{ vars.dom_color||'#EBEDF0'}} --text-color=${{ vars.text_color||'#000000'}}
+          github_heatmap weread  --weread_cookie "${{secrets.WEREAD_COOKIE}}" --year $YEAR  --me "${{secrets.NAME}}" --with-animation --background-color=${{ secrets.BACKGROUND_COLOR||'#FFFFFF'}} --track-color=${{ vars.track_color||'#ACE7AE'}} --special-color1=${{ vars.special_color||'#69C16E'}} --special-color2=${{ vars.special_color2||'#549F57'}} --dom-color=${{ vars.dom_color||'#EBEDF0'}} --text-color=${{ secrets.TEXT_COLOR||'#000000'}}
       - name: Rename weread.svg to a random name
         run: |
           RANDOM_FILENAME=$(uuidgen).svg
