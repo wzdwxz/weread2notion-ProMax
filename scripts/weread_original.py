@@ -31,6 +31,7 @@ from utils import (
     get_url,
 )
 
+
 TAG_ICON_URL = "https://www.notion.so/icons/tag_gray.svg"
 USER_ICON_URL = "https://www.notion.so/icons/user-circle-filled_gray.svg"
 TARGET_ICON_URL = "https://www.notion.so/icons/target_red.svg"
@@ -60,7 +61,7 @@ def get_bookmark_list(page_id, bookId):
     return bookmarks
 
 
-def get_review_list(page_id, bookId):
+def get_review_list(page_id,bookId):
     """获取笔记"""
     filter = {"property": "书籍", "relation": {"contains": page_id}}
     results = notion_helper.query_all_by_book(notion_helper.review_database_id, filter)
@@ -93,7 +94,7 @@ def check(bookId):
 
 
 def insert_book_to_notion(
-        page_id, bookName, bookId, cover, author, isbn, rating, categories, sort
+    page_id, bookName, bookId, cover, author, isbn, rating, categories, sort
 ):
     """插入到notion"""
     parent = {"database_id": notion_helper.book_database_id, "type": "database_id"}
@@ -152,7 +153,7 @@ def insert_book_to_notion(
         finishedDate = datetime.utcfromtimestamp(finishedDate) + timedelta(hours=8)
         properties["时间"] = get_date(finishedDate.strftime("%Y-%m-%d %H:%M:%S"))
         if "readDetail" in read_info and "beginReadingDate" in read_info.get(
-                "readDetail"
+            "readDetail"
         ):
             lastReadingDate = datetime.utcfromtimestamp(
                 read_info.get("readDetail").get("beginReadingDate")
@@ -160,13 +161,13 @@ def insert_book_to_notion(
             properties["开始阅读时间"] = get_date(
                 lastReadingDate.strftime("%Y-%m-%d %H:%M:%S")
             )
-
+ 
         if (
-                read_info.get("bookInfo") != None
-                and read_info.get("bookInfo").get("intro") != None
+            read_info.get("bookInfo") != None
+            and read_info.get("bookInfo").get("intro") != None
         ):
             properties["简介"] = get_rich_text(read_info.get("bookInfo").get("intro"))
-        notion_helper.get_date_relation(properties, finishedDate)
+        notion_helper.get_date_relation(properties,finishedDate)
     if cover.startswith("http"):
         icon = get_icon(cover)
     else:
@@ -227,8 +228,18 @@ def download_image(url, save_dir="cover"):
     return save_path
 
 
-def sort_notes(page_id, chapter=None, bookmark_list=None):
+def sort_notes(page_id, chapter, bookmark_list):
     """对笔记进行排序"""
+    bookmark_list = sorted(
+        bookmark_list,
+        key=lambda x: (
+            x.get("chapterUid", 1),
+            0
+            if (x.get("range", "") == "" or x.get("range").split("-")[0] == "")
+            else int(x.get("range").split("-")[0]),
+        ),
+    )
+
     notes = []
     if chapter != None:
         filter = {"property": "书籍", "relation": {"contains": page_id}}
@@ -242,32 +253,23 @@ def sort_notes(page_id, chapter=None, bookmark_list=None):
             for x in results
         }
         dict2 = {get_rich_text_from_result(x, "blockId"): x.get("id") for x in results}
-        if bookmark_list != None:
-            bookmark_list = sorted(
-                bookmark_list,
-                key=lambda x: (
-                    x.get("chapterUid", 1),
-                    0
-                    if (x.get("range", "") == "" or x.get("range").split("-")[0] == "")
-                    else int(x.get("range").split("-")[0]),
-                ),
-            )
-            d = {}
-            for data in bookmark_list:
-                chapterUid = data.get("chapterUid", 1)
-                if chapterUid not in d:
-                    d[chapterUid] = []
-                d[chapterUid].append(data)
-            for key, value in d.items():
-                if key in chapter:
-                    if key in dict1:
-                        chapter.get(key)["blockId"] = dict1.pop(key)
-                    notes.append(chapter.get(key))
-                notes.extend(value)
-            for blockId in dict1.values():
-                notion_helper.delete_block(blockId)
-                notion_helper.delete_block(dict2.get(blockId))
-    elif bookmark_list!=None: notes.extend(bookmark_list)
+        d = {}
+        for data in bookmark_list:
+            chapterUid = data.get("chapterUid", 1)
+            if chapterUid not in d:
+                d[chapterUid] = []
+            d[chapterUid].append(data)
+        for key, value in d.items():
+            if key in chapter:
+                if key in dict1:
+                    chapter.get(key)["blockId"] = dict1.pop(key)
+                notes.append(chapter.get(key))
+            notes.extend(value)
+        for blockId in dict1.values():
+            notion_helper.delete_block(blockId)
+            notion_helper.delete_block(dict2.get(blockId))
+    else:
+        notes.extend(bookmark_list)
     return notes
 
 
@@ -309,7 +311,7 @@ def append_blocks(id, contents):
     if len(blocks) > 0:
         l.extend(append_blocks_to_notion(id, blocks, before_block_id, sub_contents))
     for index, value in enumerate(l):
-        print(f"正在插入第{index + 1}条笔记，共{len(l)}条")
+        print(f"正在插入第{index+1}条笔记，共{len(l)}条")
         if "bookmarkId" in value:
             notion_helper.insert_bookmark(id, value)
         elif "reviewId" in value:
@@ -359,48 +361,20 @@ if __name__ == "__main__":
     options = parser.parse_args()
     weread_cookie = os.getenv("WEREAD_COOKIE")
     branch = os.getenv("REF").split("/")[-1]
-    repository = os.getenv("REPOSITORY")
+    repository =  os.getenv("REPOSITORY")
     weread_api = WeReadApi()
     notion_helper = NotionHelper()
-    latest_sort = get_sort()  # 从 Notion 中获取,有笔记的才有 sort
-    shelfBooks = weread_api.get_bookshelf()
-    notedBooks = weread_api.get_notebooklist()
-    booksWithNotesIDList = [x['bookId'] for x in notedBooks]
-    booksWithoutNotes = [i for i in shelfBooks if i["bookId"] not in booksWithNotesIDList]
-    if booksWithoutNotes != None:
-        for book in shelfBooks:
-            sort = -1
-            bookId = book.get("bookId")
-            title = book.get("title")
-            cover = book.get("cover")
-            author = book.get("author")
-            if author == "公众号" and book.get("cover").endswith("/0"):
-                cover += ".jpg"
-            if cover.startswith("http") and not cover.endswith(".jpg"):
-                path = download_image(cover)
-                cover = (
-                    f"https://raw.githubusercontent.com/{repository}/{branch}/{path}"
-                )
-            categories = book.get("categories")
-            isbn, rating = weread_api.get_bookinfo(bookId)
-            if categories != None:
-                categories = [x["title"] for x in categories]
-            #开始填写笔记
-            page_id = check(bookId)
-            page_id = insert_book_to_notion(
-                page_id, title, bookId, cover, author, isbn, rating, categories, sort
-            )
-
-    if notedBooks != None:
-        for index, book in enumerate(notedBooks):
+    latest_sort = get_sort()
+    books = weread_api.get_notebooklist()
+    if books != None:
+        for index, book in enumerate(books):
             sort = book.get("sort")
-            if sort <= latest_sort: # 用 sort 确认是否同步过
+            if sort <= latest_sort:
                 continue
             book = book.get("book")
             title = book.get("title")
             cover = book.get("cover")
-            author = book.get("author")
-            if author == "公众号" and book.get("cover").endswith("/0"):
+            if book.get("author") == "公众号" and book.get("cover").endswith("/0"):
                 cover += ".jpg"
             if cover.startswith("http") and not cover.endswith(".jpg"):
                 path = download_image(cover)
@@ -408,19 +382,19 @@ if __name__ == "__main__":
                     f"https://raw.githubusercontent.com/{repository}/{branch}/{path}"
                 )
             bookId = book.get("bookId")
+            author = book.get("author")
             categories = book.get("categories")
-            isbn, rating = weread_api.get_bookinfo(bookId)
             if categories != None:
                 categories = [x["title"] for x in categories]
-            print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index + 1}本。")
-            #开始填写笔记
+            print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index+1}本。")
             page_id = check(bookId)
+            isbn, rating = weread_api.get_bookinfo(bookId)
             page_id = insert_book_to_notion(
                 page_id, title, bookId, cover, author, isbn, rating, categories, sort
             )
             chapter = weread_api.get_chapter_info(bookId)
             bookmark_list = get_bookmark_list(page_id, bookId)
-            reviews = get_review_list(page_id, bookId)
+            reviews = get_review_list(page_id,bookId)
             bookmark_list.extend(reviews)
             content = sort_notes(page_id, chapter, bookmark_list)
             append_blocks(page_id, content)

@@ -8,6 +8,7 @@ from requests.utils import cookiejar_from_dict
 from http.cookies import SimpleCookie
 from retrying import retry
 WEREAD_URL = "https://weread.qq.com/"
+WEREAD_BOOKSHELF_URL = url = "https://i.weread.qq.com/shelf/friendCommon"
 WEREAD_NOTEBOOKS_URL = "https://i.weread.qq.com/user/notebooks"
 WEREAD_BOOKMARKLIST_URL = "https://i.weread.qq.com/book/bookmarklist"
 WEREAD_CHAPTER_INFO = "https://i.weread.qq.com/book/chapterInfos"
@@ -22,7 +23,6 @@ class WeReadApi:
         self.cookie = os.getenv("WEREAD_COOKIE")
         self.session = requests.Session()
         self.session.cookies = self.parse_cookie_string()
-
     def parse_cookie_string(self):
         cookie = SimpleCookie()
         cookie.load(self.cookie)
@@ -34,6 +34,31 @@ class WeReadApi:
                 cookies_dict, cookiejar=None, overwrite=True
             )
         return cookiejar
+
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def get_bookshelf(self):
+        """获取书架上所有书"""
+        self.session.get(WEREAD_URL)
+        r = self.session.get(WEREAD_BOOKSHELF_URL)
+        if r.ok:
+            data = r.json()
+        else:
+            raise Exception(r.text)
+        finishReadBooks = [b for b in data["finishReadBooks"] if 'bookId' in b]
+        recentBooks = [b for b in data["recentBooks"] if 'bookId' in b]
+        books = set()
+        for book in chain(finishReadBooks, recentBooks):
+            if not book["bookId"].isdigit():  # 过滤公众号
+                continue
+            try:
+                b = Book(book["bookId"], book["title"], book["author"], book["cover"])
+                books.add(b)
+            except Exception as e:
+                pass
+
+        books = list(books)
+        books.sort(key=attrgetter("title"))
+        return books
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_notebooklist(self):
@@ -54,7 +79,6 @@ class WeReadApi:
         self.session.get(WEREAD_URL)
         params = dict(bookId=bookId)
         r = self.session.get(WEREAD_BOOK_INFO, params=params)
-        isbn = ""
         if r.ok:
             data = r.json()
             isbn = data["isbn"]
@@ -62,6 +86,32 @@ class WeReadApi:
             return (isbn, newRating)
         else:
             return ("", 0)
+
+    # def get_bestbookmarks(bookId, cookies):
+    #     """获取书籍的热门划线,返回文本"""
+    #     url = "https://i.weread.qq.com/book/bestbookmarks"
+    #     params = dict(bookId=bookId)
+    #     r = requests.get(url, params=params, headers=headers, cookies=cookies, verify=False)
+    #     if r.ok:
+    #         data = r.json()
+    #     else:
+    #         raise Exception(r.text)
+    #     chapters = {c["chapterUid"]: c["title"] for c in data["chapters"]}
+    #     contents = defaultdict(list)
+    #     for item in data["items"]:
+    #         chapter = item["chapterUid"]
+    #         text = item["markText"]
+    #         contents[chapter].append(text)
+    #
+    #     chapters_map = {title: level for level, title in get_chapters(int(bookId), cookies)}
+    #     res = ""
+    #     for c in chapters:
+    #         title = chapters[c]
+    #         res += "#" * chapters_map[title] + " " + title + "\n"
+    #         for text in contents[c]:
+    #             res += "> " + text.strip() + "\n\n"
+    #         res += "\n"
+    #     return res
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_bookmark_list(self, bookId):
@@ -101,8 +151,8 @@ class WeReadApi:
             return reviews
         else:
             raise Exception(f"get {bookId} review list failed {r.text}")
-        
-    @retry(stop_max_attempt_number=3, wait_fixed=5000) 
+
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_api_data(self):
         r = self.session.get(WEREAD_HISTORY_URL)
         if not r.ok:
@@ -112,8 +162,8 @@ class WeReadApi:
             else:
                 raise Exception("Can not get weread history data")
         return r.json()
-    
-    @retry(stop_max_attempt_number=3, wait_fixed=5000) 
+
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_chapter_info(self,bookId):
         self.session.get(WEREAD_URL)
         body = {"bookIds": [bookId], "synckeys": [0], "teenmode": 0}
@@ -138,7 +188,7 @@ class WeReadApi:
             return {item["chapterUid"]: item for item in update}
         else:
             raise Exception(f"get {bookId} chapter info failed {r.text}")
-        
+
     def transform_id(self,book_id):
         id_length = len(book_id)
         if re.match("^\d*$", book_id):
