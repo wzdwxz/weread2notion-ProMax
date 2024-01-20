@@ -8,7 +8,7 @@ from requests.utils import cookiejar_from_dict
 from http.cookies import SimpleCookie
 from retrying import retry
 WEREAD_URL = "https://weread.qq.com/"
-WEREAD_BOOKSHELF_URL = url = "https://i.weread.qq.com/shelf/friendCommon"
+WEREAD_BOOKSHELF_URL = "https://i.weread.qq.com/shelf/sync"
 WEREAD_NOTEBOOKS_URL = "https://i.weread.qq.com/user/notebooks"
 WEREAD_BOOKMARKLIST_URL = "https://i.weread.qq.com/book/bookmarklist"
 WEREAD_CHAPTER_INFO = "https://i.weread.qq.com/book/chapterInfos"
@@ -17,12 +17,33 @@ WEREAD_REVIEW_LIST_URL = "https://i.weread.qq.com/review/list"
 WEREAD_BOOK_INFO = "https://i.weread.qq.com/book/info"
 WEREAD_READDATA_DETAIL = "https://i.weread.qq.com/readdata/detail"
 WEREAD_HISTORY_URL = "https://i.weread.qq.com/readdata/summary?synckey=0"
+WEREAD_COOKIE = "RK=kdx1c2Bfcc; ptcz=4bd5699d870e04135d4f45a7d4079c6cda84922767e155260d4d6983b03e2fc7; pgv_pvid=3814241170; pt_sms_phone=157******16; eas_sid=J1e6m8x0I0w0R20746s613p7R2; logTrackKey=b9f12ca9e99640b4b55a8da61bca5d9a; pac_uid=0_ae25fa75804cb; iip=0; _t_qbtool_uid=aaaa9f43r46op2rp44y3h3m8ch3488cb; wr_fp=3977575132; wr_gid=217865908; wr_vid=18002960; wr_pf=0; wr_rt=web%40XU0_Wu5_r70uKClPhcN_AL; wr_localvid=a8c325f07112b410a8c5719; wr_name=wxz; wr_avatar=https%3A%2F%2Fthirdwx.qlogo.cn%2Fmmopen%2Fvi_32%2FFwlnOiaUzxcHaSd4SnNnMUhmHkjR093uYmkd6ibbjJZn0aaapd5n8VoE2icNibUyMJnVyIO2xjwicRIJBVr2Ubuy50BQlHicRoocGicnRvVPhtlyI4%2F132; wr_gender=1; wr_skey=CCqKlv5E"
+
+HEADERS = """
+Host: i.weread.qq.com
+Connection: keep-alive
+Upgrade-Insecure-Requests: 1
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/73.0.3683.103 Safari/537.36
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3
+Accept-Encoding: gzip, deflate, br
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+"""
+HEADERS_DICT = dict(x.split(": ", 1) for x in HEADERS.splitlines() if x)
 
 class WeReadApi:
     def __init__(self):
-        self.cookie = os.getenv("WEREAD_COOKIE")
+        self.cookie = WEREAD_COOKIE
         self.session = requests.Session()
         self.session.cookies = self.parse_cookie_string()
+
+    def get_cookies_dict(self):
+        cookie = SimpleCookie()
+        cookie.load(weread_api.cookie)
+        cookies_dict = {}
+        for key, morsel in cookie.items():
+            cookies_dict[key] = morsel.value
+        return cookies_dict
+
     def parse_cookie_string(self):
         cookie = SimpleCookie()
         cookie.load(self.cookie)
@@ -39,26 +60,15 @@ class WeReadApi:
     def get_bookshelf(self):
         """获取书架上所有书"""
         self.session.get(WEREAD_URL)
-        r = self.session.get(WEREAD_BOOKSHELF_URL)
+        cookies_dict = self.get_cookies_dict()
+        params = {"userVid":cookies_dict['wr_vid'],"synckey": 0,"lectureSynckey":0}
+        r = self.session.get(WEREAD_BOOKSHELF_URL, params=params, headers=HEADERS_DICT, cookies=cookies_dict, verify=False)
         if r.ok:
             data = r.json()
+            books = data.get("books")
+            return books
         else:
-            raise Exception(r.text)
-        finishReadBooks = [b for b in data["finishReadBooks"] if 'bookId' in b]
-        recentBooks = [b for b in data["recentBooks"] if 'bookId' in b]
-        books = set()
-        for book in chain(finishReadBooks, recentBooks):
-            if not book["bookId"].isdigit():  # 过滤公众号
-                continue
-            try:
-                b = Book(book["bookId"], book["title"], book["author"], book["cover"])
-                books.add(b)
-            except Exception as e:
-                pass
-
-        books = list(books)
-        books.sort(key=attrgetter("title"))
-        return books
+            raise Exception(f"Could not get bookshelf list {r.text}")
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_notebooklist(self):
@@ -79,6 +89,7 @@ class WeReadApi:
         self.session.get(WEREAD_URL)
         params = dict(bookId=bookId)
         r = self.session.get(WEREAD_BOOK_INFO, params=params)
+        isbn = ""
         if r.ok:
             data = r.json()
             isbn = data["isbn"]
@@ -169,10 +180,10 @@ class WeReadApi:
         body = {"bookIds": [bookId], "synckeys": [0], "teenmode": 0}
         r = self.session.post(WEREAD_CHAPTER_INFO, json=body)
         if (
-            r.ok
-            and "data" in r.json()
-            and len(r.json()["data"]) == 1
-            and "updated" in r.json()["data"][0]
+                r.ok
+                and "data" in r.json()
+                and len(r.json()["data"]) == 1
+                and "updated" in r.json()["data"][0]
         ):
             update = r.json()["data"][0]["updated"]
             update.append(
