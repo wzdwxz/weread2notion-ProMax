@@ -1,243 +1,318 @@
-import hashlib
-from http.cookies import SimpleCookie
+import logging
 import os
 import re
+import time
 
-import requests
-from requests.utils import cookiejar_from_dict
-from http.cookies import SimpleCookie
+from notion_client import Client
 from retrying import retry
-WEREAD_URL = "https://weread.qq.com/"
-WEREAD_BOOKSHELF_URL = "https://i.weread.qq.com/shelf/sync"
-WEREAD_NOTEBOOKS_URL = "https://i.weread.qq.com/user/notebooks"
-WEREAD_BOOKMARKLIST_URL = "https://i.weread.qq.com/book/bookmarklist"
-WEREAD_CHAPTER_INFO = "https://i.weread.qq.com/book/chapterInfos"
-WEREAD_READ_INFO_URL = "https://i.weread.qq.com/book/readinfo"
-WEREAD_REVIEW_LIST_URL = "https://i.weread.qq.com/review/list"
-WEREAD_BOOK_INFO = "https://i.weread.qq.com/book/info"
-WEREAD_READDATA_DETAIL = "https://i.weread.qq.com/readdata/detail"
-WEREAD_HISTORY_URL = "https://i.weread.qq.com/readdata/summary?synckey=0"
-WEREAD_COOKIE = "RK=kdx1c2Bfcc; ptcz=4bd5699d870e04135d4f45a7d4079c6cda84922767e155260d4d6983b03e2fc7; pgv_pvid=3814241170; pt_sms_phone=157******16; eas_sid=J1e6m8x0I0w0R20746s613p7R2; logTrackKey=b9f12ca9e99640b4b55a8da61bca5d9a; pac_uid=0_ae25fa75804cb; iip=0; _t_qbtool_uid=aaaa9f43r46op2rp44y3h3m8ch3488cb; wr_fp=3977575132; wr_gid=217865908; wr_vid=18002960; wr_pf=0; wr_rt=web%40XU0_Wu5_r70uKClPhcN_AL; wr_localvid=a8c325f07112b410a8c5719; wr_name=wxz; wr_avatar=https%3A%2F%2Fthirdwx.qlogo.cn%2Fmmopen%2Fvi_32%2FFwlnOiaUzxcHaSd4SnNnMUhmHkjR093uYmkd6ibbjJZn0aaapd5n8VoE2icNibUyMJnVyIO2xjwicRIJBVr2Ubuy50BQlHicRoocGicnRvVPhtlyI4%2F132; wr_gender=1; wr_skey=CCqKlv5E"
+from datetime import timedelta
 
-HEADERS = """
-Host: i.weread.qq.com
-Connection: keep-alive
-Upgrade-Insecure-Requests: 1
-User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/73.0.3683.103 Safari/537.36
-Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3
-Accept-Encoding: gzip, deflate, br
-Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
-"""
-HEADERS_DICT = dict(x.split(": ", 1) for x in HEADERS.splitlines() if x)
+from utils import (
+    format_date,
+    get_date,
+    get_first_and_last_day_of_month,
+    get_first_and_last_day_of_week,
+    get_first_and_last_day_of_year,
+    get_icon,
+    get_number,
+    get_relation,
+    get_rich_text,
+    get_title,
+    timestamp_to_date,
+)
 
-class WeReadApi:
+TAG_ICON_URL = "https://www.notion.so/icons/tag_gray.svg"
+USER_ICON_URL = "https://www.notion.so/icons/user-circle-filled_gray.svg"
+TARGET_ICON_URL = "https://www.notion.so/icons/target_red.svg"
+BOOKMARK_ICON_URL = "https://www.notion.so/icons/bookmark_gray.svg"
+
+
+class NotionHelper:
+    database_name_dict = {
+        "BOOK_DATABASE_NAME":"书架",
+        "REVIEW_DATABASE_NAME":"笔记",
+        "BOOKMARK_DATABASE_NAME":"划线",
+        "DAY_DATABASE_NAME":"日",
+        "WEEK_DATABASE_NAME":"周",
+        "MONTH_DATABASE_NAME":"月",
+        "YEAR_DATABASE_NAME":"年",
+        "CATEGORY_DATABASE_NAME":"分类",
+        "AUTHOR_DATABASE_NAME":"作者",
+        "CHAPTER_DATABASE_NAME":"章节",
+    }
+    database_id_dict = {}
+    image_dict = {}
     def __init__(self):
-        self.cookie = WEREAD_COOKIE
-        self.session = requests.Session()
-        self.session.cookies = self.parse_cookie_string()
+        self.client = Client(auth=os.getenv("NOTION_TOKEN"), log_level=logging.ERROR)
+        self.__cache={}
+        self.search_database(self.extract_page_id(os.getenv("NOTION_PAGE")))
+        for key in self.database_name_dict.keys():
+            if(os.getenv(key)!=None and os.getenv(key)!=""):
+                self.database_name_dict[key] = os.getenv(key)
+        self.book_database_id = self.database_id_dict.get(self.database_name_dict.get("BOOK_DATABASE_NAME"))
+        self.review_database_id = self.database_id_dict.get(self.database_name_dict.get("REVIEW_DATABASE_NAME"))
+        self.bookmark_database_id = self.database_id_dict.get(self.database_name_dict.get("BOOKMARK_DATABASE_NAME"))
+        self.day_database_id = self.database_id_dict.get(self.database_name_dict.get("DAY_DATABASE_NAME"))
+        self.week_database_id = self.database_id_dict.get(self.database_name_dict.get("WEEK_DATABASE_NAME"))
+        self.month_database_id = self.database_id_dict.get(self.database_name_dict.get("MONTH_DATABASE_NAME"))
+        self.year_database_id = self.database_id_dict.get(self.database_name_dict.get("YEAR_DATABASE_NAME"))
+        self.category_database_id = self.database_id_dict.get(self.database_name_dict.get("CATEGORY_DATABASE_NAME"))
+        self.author_database_id = self.database_id_dict.get(self.database_name_dict.get("AUTHOR_DATABASE_NAME"))
+        self.chapter_database_id = self.database_id_dict.get(self.database_name_dict.get("CHAPTER_DATABASE_NAME"))
 
-    def get_cookies_dict(self):
-        cookie = SimpleCookie()
-        cookie.load(weread_api.cookie)
-        cookies_dict = {}
-        for key, morsel in cookie.items():
-            cookies_dict[key] = morsel.value
-        return cookies_dict
-
-    def parse_cookie_string(self):
-        cookie = SimpleCookie()
-        cookie.load(self.cookie)
-        cookies_dict = {}
-        cookiejar = None
-        for key, morsel in cookie.items():
-            cookies_dict[key] = morsel.value
-            cookiejar = cookiejar_from_dict(
-                cookies_dict, cookiejar=None, overwrite=True
-            )
-        return cookiejar
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_bookshelf(self):
-        """获取书架上所有书"""
-        self.session.get(WEREAD_URL)
-        cookies_dict = self.get_cookies_dict()
-        params = {"userVid":cookies_dict['wr_vid'],"synckey": 0,"lectureSynckey":0}
-        r = self.session.get(WEREAD_BOOKSHELF_URL, params=params, headers=HEADERS_DICT, cookies=cookies_dict, verify=False)
-        if r.ok:
-            data = r.json()
-            books = data.get("books")
-            return books
+    def extract_page_id(self,notion_url):
+        # 正则表达式匹配 32 个字符的 Notion page_id
+        match = re.search(r"([a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", notion_url)
+        if match:
+            return match.group(0)
         else:
-            raise Exception(f"Could not get bookshelf list {r.text}")
+            raise Exception(f"获取NotionID失败，请检查输入的Url是否正确")
+    def search_database(self,block_id):
+        children = self.client.blocks.children.list(block_id=block_id)["results"]
+        # 遍历子块
+        for child in children:
+            # 检查子块的类型
+            
+            if child["type"] == "child_database":
+                self.database_id_dict[child.get('child_database').get('title')] = child.get("id")
+            elif child["type"] == "image":
+                self.image_dict["url"] = child.get('image').get('external').get('url')
+                self.image_dict["id"] = child.get('id')
+            # 如果子块有子块，递归调用函数
+            if "has_children" in child and child["has_children"]:
+                self.search_database(child["id"])
 
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_notebooklist(self):
-        """获取笔记本列表"""
-        self.session.get(WEREAD_URL)
-        r = self.session.get(WEREAD_NOTEBOOKS_URL)
-        if r.ok:
-            data = r.json()
-            books = data.get("books")
-            books.sort(key=lambda x: x["sort"])
-            return books
-        else:
-            raise Exception(f"Could not get notebook list {r.text}")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_bookinfo(self, bookId):
-        """获取书的详情"""
-        self.session.get(WEREAD_URL)
-        params = dict(bookId=bookId)
-        r = self.session.get(WEREAD_BOOK_INFO, params=params)
-        isbn = ""
-        if r.ok:
-            data = r.json()
-            isbn = data["isbn"]
-            newRating = data["newRating"] / 1000
-            return (isbn, newRating)
-        else:
-            return ("", 0)
-
-    # def get_bestbookmarks(bookId, cookies):
-    #     """获取书籍的热门划线,返回文本"""
-    #     url = "https://i.weread.qq.com/book/bestbookmarks"
-    #     params = dict(bookId=bookId)
-    #     r = requests.get(url, params=params, headers=headers, cookies=cookies, verify=False)
-    #     if r.ok:
-    #         data = r.json()
-    #     else:
-    #         raise Exception(r.text)
-    #     chapters = {c["chapterUid"]: c["title"] for c in data["chapters"]}
-    #     contents = defaultdict(list)
-    #     for item in data["items"]:
-    #         chapter = item["chapterUid"]
-    #         text = item["markText"]
-    #         contents[chapter].append(text)
-    #
-    #     chapters_map = {title: level for level, title in get_chapters(int(bookId), cookies)}
-    #     res = ""
-    #     for c in chapters:
-    #         title = chapters[c]
-    #         res += "#" * chapters_map[title] + " " + title + "\n"
-    #         for text in contents[c]:
-    #             res += "> " + text.strip() + "\n\n"
-    #         res += "\n"
-    #     return res
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_bookmark_list(self, bookId):
-        self.session.get(WEREAD_URL)
-        params = dict(bookId=bookId)
-        r = self.session.get(WEREAD_BOOKMARKLIST_URL, params=params)
-        if r.ok:
-            bookmarks = r.json().get("updated")
-            return bookmarks
-        else:
-            raise Exception(f"Could not get {bookId} bookmark list")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_read_info(self, bookId):
-        self.session.get(WEREAD_URL)
-        params = dict(
-            bookId=bookId, readingDetail=1, readingBookIndex=1, finishedDate=1
-        )
-        r = self.session.get(WEREAD_READ_INFO_URL, params=params)
-        if r.ok:
-            return r.json()
-        else:
-            raise Exception(f"get {bookId} read info failed {r.text}")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_review_list(self, bookId):
-        self.session.get(WEREAD_URL)
-        params = dict(bookId=bookId, listType=11, mine=1, syncKey=0)
-        r = self.session.get(WEREAD_REVIEW_LIST_URL, params=params)
-        if r.ok:
-            reviews = r.json().get("reviews")
-            reviews = list(map(lambda x: x.get("review"), reviews))
-            reviews = [
-                {"chapterUid": 1000000, **x} if x.get("type") == 4 else x
-                for x in reviews
-            ]
-            return reviews
-        else:
-            raise Exception(f"get {bookId} review list failed {r.text}")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_api_data(self):
-        r = self.session.get(WEREAD_HISTORY_URL)
-        if not r.ok:
-            if r.json()["errcode"] == -2012:
-                self.session.get(WEREAD_URL)
-                r = self.session.get(WEREAD_HISTORY_URL)
-            else:
-                raise Exception("Can not get weread history data")
-        return r.json()
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_chapter_info(self,bookId):
-        self.session.get(WEREAD_URL)
-        body = {"bookIds": [bookId], "synckeys": [0], "teenmode": 0}
-        r = self.session.post(WEREAD_CHAPTER_INFO, json=body)
-        if (
-                r.ok
-                and "data" in r.json()
-                and len(r.json()["data"]) == 1
-                and "updated" in r.json()["data"][0]
-        ):
-            update = r.json()["data"][0]["updated"]
-            update.append(
-                {
-                    "chapterUid": 1000000,
-                    "chapterIdx": 1000000,
-                    "updateTime": 1683825006,
-                    "readAhead": 0,
-                    "title": "点评",
-                    "level": 1,
+    def update_image_block_link(self,block_id, new_image_url):
+        # 更新 image block 的链接
+        self.client.blocks.update(
+            block_id=block_id,
+            image={
+                "external": {
+                    "url": new_image_url
                 }
-            )
-            return {item["chapterUid"]: item for item in update}
+            }
+        )
+
+    def get_week_relation_id(self, date):
+        year = date.isocalendar().year
+        week = date.isocalendar().week
+        week = f"{year}年第{week}周"
+        start, end = get_first_and_last_day_of_week(date)
+        properties = {"日期": get_date(format_date(start), format_date(end))}
+        return self.get_relation_id(
+            week, self.week_database_id, TARGET_ICON_URL, properties
+        )
+
+    def get_month_relation_id(self, date):
+        month = date.strftime("%Y年%-m月")
+        start, end = get_first_and_last_day_of_month(date)
+        properties = {"日期": get_date(format_date(start), format_date(end))}
+        return self.get_relation_id(
+            month, self.month_database_id, TARGET_ICON_URL, properties
+        )
+
+    def get_year_relation_id(self, date):
+        year = date.strftime("%Y")
+        start, end = get_first_and_last_day_of_year(date)
+        properties = {"日期": get_date(format_date(start), format_date(end))}
+        return self.get_relation_id(
+            year, self.year_database_id, TARGET_ICON_URL, properties
+        )
+
+    def get_day_relation_id(self, date):
+        new_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
+        timestamp = (new_date-timedelta(hours=8)).timestamp()
+        day = new_date.strftime("%Y年%m月%d日")
+        properties = {
+            "日期": get_date(format_date(date)),
+            "时间戳": get_number(timestamp),
+        }
+        properties["年"] = get_relation(
+            [
+                self.get_year_relation_id(new_date),
+            ]
+        )
+        properties["月"] = get_relation(
+            [
+                self.get_month_relation_id(new_date),
+            ]
+        )
+        properties["周"] = get_relation(
+            [
+                self.get_week_relation_id(new_date),
+            ]
+        )
+        return self.get_relation_id(
+            day, self.day_database_id, TARGET_ICON_URL, properties
+        )
+
+    def get_relation_id(self, name, id, icon, properties={}):
+        key = f"{id}{name}"
+        if key in self.__cache:
+            return self.__cache.get(key)
+        filter = {"property": "标题", "title": {"equals": name}}
+        response = self.client.databases.query(database_id=id, filter=filter)
+        if len(response.get("results")) == 0:
+            parent = {"database_id": id, "type": "database_id"}
+            properties["标题"] = get_title(name)
+            page_id = self.client.pages.create(
+                parent=parent, properties=properties, icon=get_icon(icon)
+            ).get("id")
         else:
-            raise Exception(f"get {bookId} chapter info failed {r.text}")
+            page_id = response.get("results")[0].get("id")
+        self.__cache[key] = page_id
+        return page_id
 
-    def transform_id(self,book_id):
-        id_length = len(book_id)
-        if re.match("^\d*$", book_id):
-            ary = []
-            for i in range(0, id_length, 9):
-                ary.append(format(int(book_id[i : min(i + 9, id_length)]), "x"))
-            return "3", ary
+    def insert_bookmark(self, id, bookmark):
+        icon = get_icon(BOOKMARK_ICON_URL)
+        properties = {
+            "Name": get_title(bookmark.get("markText")),
+            "bookId": get_rich_text(bookmark.get("bookId")),
+            "range": get_rich_text(bookmark.get("range")),
+            "bookmarkId": get_rich_text(bookmark.get("bookmarkId")),
+            "blockId": get_rich_text(bookmark.get("blockId")),
+            "chapterUid": get_number(bookmark.get("chapterUid")),
+            "bookVersion": get_number(bookmark.get("bookVersion")),
+            "colorStyle": get_number(bookmark.get("colorStyle")),
+            "type": get_number(bookmark.get("type")),
+            "style": get_number(bookmark.get("style")),
+            "书籍": get_relation([id]),
+        }
+        if "createTime" in bookmark:
+            create_time = timestamp_to_date(int(bookmark.get("createTime")))
+            properties["Date"] = get_date(create_time.strftime("%Y-%m-%d %H:%M:%S"))
+            self.get_date_relation(properties,create_time)
+        parent = {"database_id": self.bookmark_database_id, "type": "database_id"}
+        self.create_page(parent, properties, icon)
 
-        result = ""
-        for i in range(id_length):
-            result += format(ord(book_id[i]), "x")
-        return "4", [result]
+    def insert_review(self, id, review):
+        time.sleep(0.1)
+        icon = get_icon(TAG_ICON_URL)
+        properties = {
+            "Name": get_title(review.get("content")),
+            "bookId": get_rich_text(review.get("bookId")),
+            "reviewId": get_rich_text(review.get("reviewId")),
+            "blockId": get_rich_text(review.get("blockId")),
+            "chapterUid": get_number(review.get("chapterUid")),
+            "bookVersion": get_number(review.get("bookVersion")),
+            "type": get_number(review.get("type")),
+            "书籍": get_relation([id]),
+        }
+        if "range" in review:
+            properties["range"] = get_rich_text(review.get("range"))
+        if "star" in review:
+            properties["star"] = get_number(review.get("star"))
+        if "abstract" in review:
+            properties["abstract"] = get_rich_text(review.get("abstract"))
+        if "createTime" in review:
+            create_time = timestamp_to_date(int(review.get("createTime")))
+            properties["Date"] = get_date(create_time.strftime("%Y-%m-%d %H:%M:%S"))
+            self.get_date_relation(properties,create_time)
+        parent = {"database_id": self.review_database_id, "type": "database_id"}
+        self.create_page(parent, properties, icon)
 
+    def insert_chapter(self, id, chapter):
+        time.sleep(0.1)
+        icon = {"type": "external", "external": {"url": TAG_ICON_URL}}
+        properties = {
+            "Name": get_title(chapter.get("title")),
+            "blockId": get_rich_text(chapter.get("blockId")),
+            "chapterUid": {"number": chapter.get("chapterUid")},
+            "chapterIdx": {"number": chapter.get("chapterIdx")},
+            "readAhead": {"number": chapter.get("readAhead")},
+            "updateTime": {"number": chapter.get("updateTime")},
+            "level": {"number": chapter.get("level")},
+            "书籍": {"relation": [{"id": id}]},
+        }
+        parent = {"database_id": self.chapter_database_id, "type": "database_id"}
+        self.create_page(parent, properties, icon)
 
-    def calculate_book_str_id(self,book_id):
-        md5 = hashlib.md5()
-        md5.update(book_id.encode("utf-8"))
-        digest = md5.hexdigest()
-        result = digest[0:3]
-        code, transformed_ids = self.transform_id(book_id)
-        result += code + "2" + digest[-2:]
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def update_page(self, page_id, properties, icon):
+        return self.client.pages.update(
+            page_id=page_id, icon=icon, properties=properties
+        )
 
-        for i in range(len(transformed_ids)):
-            hex_length_str = format(len(transformed_ids[i]), "x")
-            if len(hex_length_str) == 1:
-                hex_length_str = "0" + hex_length_str
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def create_page(self, parent, properties, icon):
+        return self.client.pages.create(parent=parent, properties=properties, icon=icon)
 
-            result += hex_length_str + transformed_ids[i]
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def query(self, **kwargs):
+        kwargs = {k: v for k, v in kwargs.items() if v}
+        return self.client.databases.query(**kwargs)
 
-            if i < len(transformed_ids) - 1:
-                result += "g"
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def get_block_children(self, id):
+        response = self.client.blocks.children.list(id)
+        return response.get("results")
 
-        if len(result) < 20:
-            result += digest[0 : 20 - len(result)]
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def append_blocks(self, block_id, children):
+        return self.client.blocks.children.append(block_id=block_id, children=children)
 
-        md5 = hashlib.md5()
-        md5.update(result.encode("utf-8"))
-        result += md5.hexdigest()[0:3]
-        return result
-    def get_url(self,book_id):
-        return f"https://weread.qq.com/web/reader/{self.calculate_book_str_id(book_id)}"
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def append_blocks_after(self, block_id, children, after):
+        return self.client.blocks.children.append(
+            block_id=block_id, children=children, after=after
+        )
+
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def delete_block(self, block_id):
+        return self.client.blocks.delete(block_id=block_id)
+    
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def query_all_by_book(self,database_id,filter):
+        results = []
+        has_more = True
+        start_cursor = None
+        while has_more:
+            response = self.client.databases.query(
+                database_id=database_id,
+                filter=filter,
+                start_cursor=start_cursor,
+                page_size=100,
+            )
+            start_cursor = response.get("next_cursor")
+            has_more = response.get("has_more")
+            results.extend(response.get("results"))
+        return results
+    
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def query_all(self, database_id):
+        """获取database中所有的数据"""
+        results = []
+        has_more = True
+        start_cursor = None
+        while has_more:
+            response = self.client.databases.query(
+                database_id=database_id,
+                start_cursor=start_cursor,
+                page_size=100,
+            )
+            start_cursor = response.get("next_cursor")
+            has_more = response.get("has_more")
+            results.extend(response.get("results"))
+        return results
+    
+    def get_date_relation(self,properties,date):
+        properties["年"] = get_relation(
+            [
+                self.get_year_relation_id(date),
+            ]
+        )
+        properties["月"] = get_relation(
+            [
+                self.get_month_relation_id(date),
+            ]
+        )
+        properties["周"] = get_relation(
+            [
+                self.get_week_relation_id(date),
+            ]
+        )
+        properties["日"] = get_relation(
+            [
+                self.get_day_relation_id(date),
+            ]
+        )
