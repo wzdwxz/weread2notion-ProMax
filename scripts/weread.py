@@ -353,6 +353,27 @@ def append_blocks_to_notion(id, blocks, after, contents):
         l.append(content)
     return l
 
+def consolidate2Page(bookId,book,sort,repository,branch):
+    title = book.get("title")
+    cover = book.get("cover")
+    author = book.get("author")
+    if author == "公众号" and book.get("cover").endswith("/0"):
+        cover += ".jpg"
+    if cover.startswith("http") and not cover.endswith(".jpg"):
+        path = download_image(cover)
+        cover = (
+            f"https://raw.githubusercontent.com/{repository}/{branch}/{path}"
+        )
+    categories = book.get("categories")
+    isbn, rating = weread_api.get_bookinfo(bookId)
+    if categories != None:
+        categories = [x["title"] for x in categories]
+    #开始填写笔记
+    page_id = check(bookId)
+    page_id = insert_book_to_notion(
+        page_id, title, bookId, cover, author, isbn, rating, categories, sort
+    )
+    return page_id
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -366,30 +387,13 @@ if __name__ == "__main__":
     shelfBooks = weread_api.get_bookshelf()
     notedBooks = weread_api.get_notebooklist()
     booksWithNotesIDList = [x['bookId'] for x in notedBooks]
-    booksWithoutNotes = [i for i in shelfBooks if i["bookId"] not in booksWithNotesIDList]
-    if booksWithoutNotes != None:
+    if shelfBooks != None:
         for book in shelfBooks:
-            sort = -1
             bookId = book.get("bookId")
-            title = book.get("title")
-            cover = book.get("cover")
-            author = book.get("author")
-            if author == "公众号" and book.get("cover").endswith("/0"):
-                cover += ".jpg"
-            if cover.startswith("http") and not cover.endswith(".jpg"):
-                path = download_image(cover)
-                cover = (
-                    f"https://raw.githubusercontent.com/{repository}/{branch}/{path}"
-                )
-            categories = book.get("categories")
-            isbn, rating = weread_api.get_bookinfo(bookId)
-            if categories != None:
-                categories = [x["title"] for x in categories]
-            #开始填写笔记
-            page_id = check(bookId)
-            page_id = insert_book_to_notion(
-                page_id, title, bookId, cover, author, isbn, rating, categories, sort
-            )
+            if bookId in booksWithNotesIDList:
+                continue
+            sort = -1
+            consolidate2Page(bookId,book,sort,repository,branch)
 
     if notedBooks != None:
         for index, book in enumerate(notedBooks):
@@ -397,27 +401,8 @@ if __name__ == "__main__":
             if sort <= latest_sort: # 用 sort 确认是否同步过
                 continue
             book = book.get("book")
-            title = book.get("title")
-            cover = book.get("cover")
-            author = book.get("author")
-            if author == "公众号" and book.get("cover").endswith("/0"):
-                cover += ".jpg"
-            if cover.startswith("http") and not cover.endswith(".jpg"):
-                path = download_image(cover)
-                cover = (
-                    f"https://raw.githubusercontent.com/{repository}/{branch}/{path}"
-                )
             bookId = book.get("bookId")
-            categories = book.get("categories")
-            isbn, rating = weread_api.get_bookinfo(bookId)
-            if categories != None:
-                categories = [x["title"] for x in categories]
-            print(f"正在同步《{title}》,一共{len(notedBooks)}本，当前是第{index + 1}本。")
-            #开始填写笔记
-            page_id = check(bookId)
-            page_id = insert_book_to_notion(
-                page_id, title, bookId, cover, author, isbn, rating, categories, sort
-            )
+            page_id = consolidate2Page(bookId,book,sort,repository,branch)
             chapter = weread_api.get_chapter_info(bookId)
             bookmark_list = get_bookmark_list(page_id, bookId)
             reviews = get_review_list(page_id, bookId)
