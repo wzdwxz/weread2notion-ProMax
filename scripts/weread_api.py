@@ -38,7 +38,7 @@ class WeReadApi:
 
     def get_cookies_dict(self):
         cookie = SimpleCookie()
-        cookie.load(weread_api.cookie)
+        cookie.load(self.cookie)
         cookies_dict = {}
         for key, morsel in cookie.items():
             cookies_dict[key] = morsel.value
