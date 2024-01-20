@@ -412,7 +412,7 @@ if __name__ == "__main__":
             isbn, rating = weread_api.get_bookinfo(bookId)
             if categories != None:
                 categories = [x["title"] for x in categories]
-            print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index + 1}本。")
+            print(f"正在同步《{title}》,一共{len(notedBooks)}本，当前是第{index + 1}本。")
             #开始填写笔记
             page_id = check(bookId)
             page_id = insert_book_to_notion(
